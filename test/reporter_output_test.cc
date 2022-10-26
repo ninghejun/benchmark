@@ -17,7 +17,7 @@ static int AddContextCases() {
   AddCases(TC_ConsoleErr,
            {
                {"^%int-%int-%intT%int:%int:%int[-+]%int:%int$", MR_Default},
-               {"Running .*/reporter_output_test(\\.exe)?$", MR_Next},
+               {"Running .*(/|\\\\)reporter_output_test(\\.exe)?$", MR_Next},
                {"Run on \\(%int X %float MHz CPU s?\\)", MR_Next},
            });
   AddCases(TC_JSONOut,
@@ -318,7 +318,7 @@ ADD_CASES(TC_JSONOut, {{"\"name\": \"BM_no_arg_name/3\",$"},
 ADD_CASES(TC_CSVOut, {{"^\"BM_no_arg_name/3\",%csv_report$"}});
 
 // ========================================================================= //
-// ------------------------ Testing Arg Name Output ----------------------- //
+// ------------------------ Testing Arg Name Output ------------------------ //
 // ========================================================================= //
 
 void BM_arg_name(benchmark::State& state) {

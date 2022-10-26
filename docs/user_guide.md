@@ -58,8 +58,11 @@
 
 [A Faster KeepRunning Loop](#a-faster-keep-running-loop)
 
+## Benchmarking Tips
+
 [Disabling CPU Frequency Scaling](#disabling-cpu-frequency-scaling)
 
+[Reducing Variance in Benchmarks](reducing_variance.md)
 
 <a name="output-formats" />
 
@@ -182,6 +185,12 @@ BM_memcpy/32          12 ns         12 ns   54687500
 BM_memcpy/32k       1834 ns       1837 ns     357143
 ```
 
+## Disabling Benchmarks
+
+It is possible to temporarily disable benchmarks by renaming the benchmark
+function to have the prefix "DISABLED_". This will cause the benchmark to
+be skipped at runtime.
+
 <a name="result-comparison" />
 
 ## Result comparison
@@ -233,6 +242,19 @@ governed by the amount of time the benchmark takes. Concretely, the number of
 iterations is at least one, not more than 1e9, until CPU time is greater than
 the minimum time, or the wallclock time is 5x minimum time. The minimum time is
 set per benchmark by calling `MinTime` on the registered benchmark object.
+
+Furthermore warming up a benchmark might be necessary in order to get
+stable results because of e.g caching effects of the code under benchmark.
+Warming up means running the benchmark a given amount of time, before
+results are actually taken into account. The amount of time for which
+the warmup should be run can be set per benchmark by calling
+`MinWarmUpTime` on the registered benchmark object or for all benchmarks
+using the `--benchmark_min_warmup_time` command-line option. Note that
+`MinWarmUpTime` will overwrite the value of `--benchmark_min_warmup_time`
+for the single benchmark. How many iterations the warmup run of each
+benchmark takes is determined the same way as described in the paragraph
+above. Per default the warmup phase is set to 0 seconds and is therefore
+disabled.
 
 Average timings are then reported over the iterations run. If multiple
 repetitions are requested using the `--benchmark_repetitions` command-line
@@ -295,7 +317,7 @@ static void BM_memcpy(benchmark::State& state) {
   delete[] src;
   delete[] dst;
 }
-BENCHMARK(BM_memcpy)->Arg(8)->Arg(64)->Arg(512)->Arg(1<<10)->Arg(8<<10);
+BENCHMARK(BM_memcpy)->Arg(8)->Arg(64)->Arg(512)->Arg(4<<10)->Arg(8<<10);
 ```
 
 The preceding code is quite repetitive, and can be replaced with the following
@@ -364,17 +386,14 @@ short-hand. The following macro will pick a few appropriate arguments in the
 product of the two specified ranges and will generate a benchmark for each such
 pair.
 
-{% raw %}
 ```c++
 BENCHMARK(BM_SetInsert)->Ranges({{1<<10, 8<<10}, {128, 512}});
 ```
-{% endraw %}
 
 Some benchmarks may require specific argument values that cannot be expressed
 with `Ranges`. In this case, `ArgsProduct` offers the ability to generate a
 benchmark input for each combination in the product of the supplied vectors.
 
-{% raw %}
 ```c++
 BENCHMARK(BM_SetInsert)
     ->ArgsProduct({{1<<10, 3<<10, 8<<10}, {20, 40, 60, 80}})
@@ -393,7 +412,6 @@ BENCHMARK(BM_SetInsert)
     ->Args({3<<10, 80})
     ->Args({8<<10, 80});
 ```
-{% endraw %}
 
 For the most common scenarios, helper methods for creating a list of
 integers for a given sparse or dense range are provided.
@@ -679,7 +697,6 @@ is 1k a 1000 (default, `benchmark::Counter::OneK::kIs1000`), or 1024
 When you're compiling in C++11 mode or later you can use `insert()` with
 `std::initializer_list`:
 
-{% raw %}
 ```c++
   // With C++11, this can be done:
   state.counters.insert({{"Foo", numFoos}, {"Bar", numBars}, {"Baz", numBazs}});
@@ -688,7 +705,6 @@ When you're compiling in C++11 mode or later you can use `insert()` with
   state.counters["Bar"] = numBars;
   state.counters["Baz"] = numBazs;
 ```
-{% endraw %}
 
 ### Counter Reporting
 
@@ -857,7 +873,6 @@ is measured. But sometimes, it is necessary to do some work inside of
 that loop, every iteration, but without counting that time to the benchmark time.
 That is possible, although it is not recommended, since it has high overhead.
 
-{% raw %}
 ```c++
 static void BM_SetInsert_With_Timer_Control(benchmark::State& state) {
   std::set<int> data;
@@ -872,7 +887,6 @@ static void BM_SetInsert_With_Timer_Control(benchmark::State& state) {
 }
 BENCHMARK(BM_SetInsert_With_Timer_Control)->Ranges({{1<<10, 8<<10}, {128, 512}});
 ```
-{% endraw %}
 
 <a name="manual-timing" />
 
@@ -1232,35 +1246,7 @@ If you see this error:
 ```
 
 you might want to disable the CPU frequency scaling while running the
-benchmark.  Exactly how to do this depends on the Linux distribution,
-desktop environment, and installed programs.  Specific details are a moving
-target, so we will not attempt to exhaustively document them here.
+benchmark, as well as consider other ways to stabilize the performance of
+your system while benchmarking.
 
-One simple option is to use the `cpupower` program to change the
-performance governor to "performance".  This tool is maintained along with
-the Linux kernel and provided by your distribution.
-
-It must be run as root, like this:
-
-```bash
-sudo cpupower frequency-set --governor performance
-```
-
-After this you can verify that all CPUs are using the performance governor
-by running this command:
-
-```bash
-cpupower frequency-info -o proc
-```
-
-The benchmarks you subsequently run will have less variance.
-
-Note that changing the governor in this way will not persist across
-reboots.  To set the governor back, run the first command again with the
-governor your system usually runs with, which varies.
-
-If you find yourself doing this often, there are probably better options
-than running the commands above.  Some approaches allow you to do this
-without root access, or by using a GUI, etc.  The Arch Wiki [Cpu frequency
-scaling](https://wiki.archlinux.org/title/CPU_frequency_scaling) page is a
-good place to start looking for options.
+See [Reducing Variance](reducing_variance.md) for more information.

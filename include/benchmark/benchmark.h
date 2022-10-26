@@ -220,29 +220,18 @@ BENCHMARK(BM_test)->Unit(benchmark::kMillisecond);
 
 #if defined(__GNUC__) || defined(__clang__)
 #define BENCHMARK_ALWAYS_INLINE __attribute__((always_inline))
-#define BENCHMARK_NOEXCEPT noexcept
-#define BENCHMARK_NOEXCEPT_OP(x) noexcept(x)
 #elif defined(_MSC_VER) && !defined(__clang__)
 #define BENCHMARK_ALWAYS_INLINE __forceinline
-#if _MSC_VER >= 1900
-#define BENCHMARK_NOEXCEPT noexcept
-#define BENCHMARK_NOEXCEPT_OP(x) noexcept(x)
-#else
-#define BENCHMARK_NOEXCEPT
-#define BENCHMARK_NOEXCEPT_OP(x)
-#endif
 #define __func__ __FUNCTION__
 #else
 #define BENCHMARK_ALWAYS_INLINE
-#define BENCHMARK_NOEXCEPT
-#define BENCHMARK_NOEXCEPT_OP(x)
 #endif
 
 #define BENCHMARK_INTERNAL_TOSTRING2(x) #x
 #define BENCHMARK_INTERNAL_TOSTRING(x) BENCHMARK_INTERNAL_TOSTRING2(x)
 
 // clang-format off
-#if defined(__GNUC__) || defined(__clang__)
+#if defined(__GNUC__) && !defined(__NVCC__) || defined(__clang__)
 #define BENCHMARK_BUILTIN_EXPECT(x, y) __builtin_expect(x, y)
 #define BENCHMARK_DEPRECATED_MSG(msg) __attribute__((deprecated(msg)))
 #define BENCHMARK_DISABLE_DEPRECATED_WARNING \
@@ -291,8 +280,10 @@ BENCHMARK(BM_test)->Unit(benchmark::kMillisecond);
 namespace benchmark {
 class BenchmarkReporter;
 
+BENCHMARK_EXPORT void PrintDefaultHelp();
+
 BENCHMARK_EXPORT void Initialize(int* argc, char** argv,
-                                 void (*HelperPrinterf)() = NULL);
+                                 void (*HelperPrinterf)() = PrintDefaultHelp);
 BENCHMARK_EXPORT void Shutdown();
 
 // Report to stdout all arguments in 'argv' as unrecognized except the first.
@@ -307,6 +298,9 @@ BENCHMARK_EXPORT std::string GetBenchmarkFilter();
 // Should be called after `benchmark::Initialize()`, as
 // `benchmark::Initialize()` will override the flag's value.
 BENCHMARK_EXPORT void SetBenchmarkFilter(std::string value);
+
+// Returns the current value of --v (command line value for verbosity).
+BENCHMARK_EXPORT int32_t GetBenchmarkVerbosity();
 
 // Creates a default display reporter. Used by the library when no display
 // reporter is provided, but also made available for external use in case a
@@ -412,6 +406,8 @@ class Benchmark;
 class BenchmarkImp;
 class BenchmarkFamilies;
 
+BENCHMARK_EXPORT std::map<std::string, std::string>*& GetGlobalContext();
+
 BENCHMARK_EXPORT
 void UseCharPointer(char const volatile*);
 
@@ -443,6 +439,7 @@ inline BENCHMARK_ALWAYS_INLINE void ClobberMemory() {
 // intended to add little to no overhead.
 // See: https://youtu.be/nXaxk27zwlk?t=2441
 #ifndef BENCHMARK_HAS_NO_INLINE_ASSEMBLY
+#if !defined(__GNUC__) || defined(__llvm__) || defined(__INTEL_COMPILER)
 template <class Tp>
 inline BENCHMARK_ALWAYS_INLINE void DoNotOptimize(Tp const& value) {
   asm volatile("" : : "r,m"(value) : "memory");
@@ -456,6 +453,55 @@ inline BENCHMARK_ALWAYS_INLINE void DoNotOptimize(Tp& value) {
   asm volatile("" : "+m,r"(value) : : "memory");
 #endif
 }
+#elif defined(BENCHMARK_HAS_CXX11) && (__GNUC__ >= 5)
+// Workaround for a bug with full argument copy overhead with GCC.
+// See: #1340 and https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105519
+template <class Tp>
+inline BENCHMARK_ALWAYS_INLINE
+    typename std::enable_if<std::is_trivially_copyable<Tp>::value &&
+                            (sizeof(Tp) <= sizeof(Tp*))>::type
+    DoNotOptimize(Tp const& value) {
+  asm volatile("" : : "r,m"(value) : "memory");
+}
+
+template <class Tp>
+inline BENCHMARK_ALWAYS_INLINE
+    typename std::enable_if<!std::is_trivially_copyable<Tp>::value ||
+                            (sizeof(Tp) > sizeof(Tp*))>::type
+    DoNotOptimize(Tp const& value) {
+  asm volatile("" : : "m"(value) : "memory");
+}
+
+template <class Tp>
+inline BENCHMARK_ALWAYS_INLINE
+    typename std::enable_if<std::is_trivially_copyable<Tp>::value &&
+                            (sizeof(Tp) <= sizeof(Tp*))>::type
+    DoNotOptimize(Tp& value) {
+  asm volatile("" : "+m,r"(value) : : "memory");
+}
+
+template <class Tp>
+inline BENCHMARK_ALWAYS_INLINE
+    typename std::enable_if<!std::is_trivially_copyable<Tp>::value ||
+                            (sizeof(Tp) > sizeof(Tp*))>::type
+    DoNotOptimize(Tp& value) {
+  asm volatile("" : "+m"(value) : : "memory");
+}
+
+#else
+// Fallback for GCC < 5. Can add some overhead because the compiler is forced
+// to use memory operations instead of operations with registers.
+// TODO: Remove if GCC < 5 will be unsupported.
+template <class Tp>
+inline BENCHMARK_ALWAYS_INLINE void DoNotOptimize(Tp const& value) {
+  asm volatile("" : : "m"(value) : "memory");
+}
+
+template <class Tp>
+inline BENCHMARK_ALWAYS_INLINE void DoNotOptimize(Tp& value) {
+  asm volatile("" : "+m"(value) : : "memory");
+}
+#endif
 
 #ifndef BENCHMARK_HAS_CXX11
 inline BENCHMARK_ALWAYS_INLINE void ClobberMemory() {
@@ -546,7 +592,7 @@ typedef std::map<std::string, Counter> UserCounters;
 // calculated automatically to the best fit.
 enum BigO { oNone, o1, oN, oNSquared, oNCubed, oLogN, oNLogN, oAuto, oLambda };
 
-typedef uint64_t IterationCount;
+typedef int64_t IterationCount;
 
 enum StatisticUnit { kTime, kPercentage };
 
@@ -1030,6 +1076,12 @@ class BENCHMARK_EXPORT Benchmark {
   // REQUIRES: `t > 0` and `Iterations` has not been called on this benchmark.
   Benchmark* MinTime(double t);
 
+  // Set the minimum amount of time to run the benchmark before taking runtimes
+  // of this benchmark into account. This
+  // option overrides the `benchmark_min_warmup_time` flag.
+  // REQUIRES: `t >= 0` and `Iterations` has not been called on this benchmark.
+  Benchmark* MinWarmUpTime(double t);
+
   // Specify the amount of iterations that should be run by this benchmark.
   // REQUIRES: 'n > 0' and `MinTime` has not been called on this benchmark.
   //
@@ -1055,7 +1107,7 @@ class BENCHMARK_EXPORT Benchmark {
   // By default, the CPU time is measured only for the main thread, which may
   // be unrepresentative if the benchmark uses threads internally. If called,
   // the total CPU time spent by all the threads will be measured instead.
-  // By default, the only the main thread CPU time will be measured.
+  // By default, only the main thread CPU time will be measured.
   Benchmark* MeasureProcessCPUTime();
 
   // If a particular benchmark should use the Wall clock instead of the CPU time
@@ -1142,6 +1194,7 @@ class BENCHMARK_EXPORT Benchmark {
 
   int range_multiplier_;
   double min_time_;
+  double min_warmup_time_;
   IterationCount iterations_;
   int repetitions_;
   bool measure_process_cpu_time_;
@@ -1481,8 +1534,15 @@ class Fixture : public internal::Benchmark {
 #endif
 
 // Helper macro to create a main routine in a test that runs the benchmarks
+// Note the workaround for Hexagon simulator passing argc != 0, argv = NULL.
 #define BENCHMARK_MAIN()                                                \
   int main(int argc, char** argv) {                                     \
+    char arg0_default[] = "benchmark";                                  \
+    char* args_default = arg0_default;                                  \
+    if (!argv) {                                                        \
+      argc = 1;                                                         \
+      argv = &args_default;                                             \
+    }                                                                   \
     ::benchmark::Initialize(&argc, argv);                               \
     if (::benchmark::ReportUnrecognizedArguments(argc, argv)) return 1; \
     ::benchmark::RunSpecifiedBenchmarks();                              \
@@ -1536,6 +1596,7 @@ struct BENCHMARK_EXPORT BenchmarkName {
   std::string function_name;
   std::string args;
   std::string min_time;
+  std::string min_warmup_time;
   std::string iterations;
   std::string repetitions;
   std::string time_type;

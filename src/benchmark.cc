@@ -19,7 +19,7 @@
 #include "internal_macros.h"
 
 #ifndef BENCHMARK_OS_WINDOWS
-#ifndef BENCHMARK_OS_FUCHSIA
+#if !defined(BENCHMARK_OS_FUCHSIA) && !defined(BENCHMARK_OS_QURT)
 #include <sys/resource.h>
 #endif
 #include <sys/time.h>
@@ -71,6 +71,13 @@ BM_DEFINE_string(benchmark_filter, "");
 // real-time based tests, this is the lower bound on the elapsed time of the
 // benchmark execution, regardless of number of threads.
 BM_DEFINE_double(benchmark_min_time, 0.5);
+
+// Minimum number of seconds a benchmark should be run before results should be
+// taken into account. This e.g can be neccessary for benchmarks of code which
+// needs to fill some form of cache before performance is of interrest.
+// Note: results gathered within this period are discarded and not used for
+// reported result.
+BM_DEFINE_double(benchmark_min_warmup_time, 0.0);
 
 // The number of runs of each benchmark. If greater than 1, the mean and
 // standard deviation of the runs will be reported.
@@ -130,7 +137,11 @@ BM_DEFINE_int32(v, 0);
 
 namespace internal {
 
-BENCHMARK_EXPORT std::map<std::string, std::string>* global_context = nullptr;
+std::map<std::string, std::string>* global_context = nullptr;
+
+BENCHMARK_EXPORT std::map<std::string, std::string>*& GetGlobalContext() {
+  return global_context;
+}
 
 // FIXME: wouldn't LTO mess this up?
 void UseCharPointer(char const volatile*) {}
@@ -171,6 +182,10 @@ State::State(IterationCount max_iters, const std::vector<int64_t>& ranges,
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Winvalid-offsetof"
 #endif
+#if defined(__NVCC__)
+#pragma nv_diagnostic push
+#pragma nv_diag_suppress 1427
+#endif
   // Offset tests to ensure commonly accessed data is on the first cache line.
   const int cache_line_size = 64;
   static_assert(offsetof(State, error_occurred_) <=
@@ -180,6 +195,9 @@ State::State(IterationCount max_iters, const std::vector<int64_t>& ranges,
 #pragma warning pop
 #elif defined(__GNUC__)
 #pragma GCC diagnostic pop
+#endif
+#if defined(__NVCC__)
+#pragma nv_diagnostic pop
 #endif
 }
 
@@ -539,6 +557,8 @@ void SetBenchmarkFilter(std::string value) {
   FLAGS_benchmark_filter = std::move(value);
 }
 
+int32_t GetBenchmarkVerbosity() { return FLAGS_v; }
+
 void RegisterMemoryManager(MemoryManager* manager) {
   internal::memory_manager = manager;
 }
@@ -558,27 +578,7 @@ namespace internal {
 void (*HelperPrintf)();
 
 void PrintUsageAndExit() {
-  if (HelperPrintf) {
-    HelperPrintf();
-  } else {
-    fprintf(stdout,
-            "benchmark"
-            " [--benchmark_list_tests={true|false}]\n"
-            "          [--benchmark_filter=<regex>]\n"
-            "          [--benchmark_min_time=<min_time>]\n"
-            "          [--benchmark_repetitions=<num_repetitions>]\n"
-            "          [--benchmark_enable_random_interleaving={true|false}]\n"
-            "          [--benchmark_report_aggregates_only={true|false}]\n"
-            "          [--benchmark_display_aggregates_only={true|false}]\n"
-            "          [--benchmark_format=<console|json|csv>]\n"
-            "          [--benchmark_out=<filename>]\n"
-            "          [--benchmark_out_format=<json|console|csv>]\n"
-            "          [--benchmark_color={auto|true|false}]\n"
-            "          [--benchmark_counters_tabular={true|false}]\n"
-            "          [--benchmark_context=<key>=<value>,...]\n"
-            "          [--benchmark_time_unit={ns|us|ms|s}]\n"
-            "          [--v=<verbosity>]\n");
-  }
+  HelperPrintf();
   exit(0);
 }
 
@@ -606,6 +606,8 @@ void ParseCommandLineFlags(int* argc, char** argv) {
         ParseStringFlag(argv[i], "benchmark_filter", &FLAGS_benchmark_filter) ||
         ParseDoubleFlag(argv[i], "benchmark_min_time",
                         &FLAGS_benchmark_min_time) ||
+        ParseDoubleFlag(argv[i], "benchmark_min_warmup_time",
+                        &FLAGS_benchmark_min_warmup_time) ||
         ParseInt32Flag(argv[i], "benchmark_repetitions",
                        &FLAGS_benchmark_repetitions) ||
         ParseBoolFlag(argv[i], "benchmark_enable_random_interleaving",
@@ -658,10 +660,31 @@ int InitializeStreams() {
 
 }  // end namespace internal
 
+void PrintDefaultHelp() {
+  fprintf(stdout,
+          "benchmark"
+          " [--benchmark_list_tests={true|false}]\n"
+          "          [--benchmark_filter=<regex>]\n"
+          "          [--benchmark_min_time=<min_time>]\n"
+          "          [--benchmark_min_warmup_time=<min_warmup_time>]\n"
+          "          [--benchmark_repetitions=<num_repetitions>]\n"
+          "          [--benchmark_enable_random_interleaving={true|false}]\n"
+          "          [--benchmark_report_aggregates_only={true|false}]\n"
+          "          [--benchmark_display_aggregates_only={true|false}]\n"
+          "          [--benchmark_format=<console|json|csv>]\n"
+          "          [--benchmark_out=<filename>]\n"
+          "          [--benchmark_out_format=<json|console|csv>]\n"
+          "          [--benchmark_color={auto|true|false}]\n"
+          "          [--benchmark_counters_tabular={true|false}]\n"
+          "          [--benchmark_context=<key>=<value>,...]\n"
+          "          [--benchmark_time_unit={ns|us|ms|s}]\n"
+          "          [--v=<verbosity>]\n");
+}
+
 void Initialize(int* argc, char** argv, void (*HelperPrintf)()) {
+  internal::HelperPrintf = HelperPrintf;
   internal::ParseCommandLineFlags(argc, argv);
   internal::LogLevel() = FLAGS_v;
-  internal::HelperPrintf = HelperPrintf;
 }
 
 void Shutdown() { delete internal::global_context; }

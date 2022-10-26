@@ -116,6 +116,9 @@ class BuildBazelExtension(build_ext.build_ext):
             os.makedirs(ext_dest_dir)
         shutil.copyfile(ext_bazel_bin_path, ext_dest_path)
 
+        # explicitly call `bazel shutdown` for graceful exit
+        self.spawn(["bazel", "shutdown"])
+
 
 setuptools.setup(
     name="google_benchmark",
@@ -144,9 +147,11 @@ setuptools.setup(
         "Intended Audience :: Developers",
         "Intended Audience :: Science/Research",
         "License :: OSI Approved :: Apache Software License",
-        "Programming Language :: Python :: 3.6",
         "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
         "Topic :: Software Development :: Testing",
         "Topic :: System :: Benchmark",
     ],
